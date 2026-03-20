@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-每日财经早报 - 钉钉机器人推送
-包含：热点股票、个股点评、操作建议、财经新闻
-通过 GitHub Actions 云端自动执行
+每日财经早报 - 量化交易专业版
+数据来源：东方财富、腾讯财经
+包含：大盘指数、热点股票、量化点评、专业操作建议、财经新闻
 """
 
 import os
@@ -20,287 +20,307 @@ DINGTALK_TOKEN = os.environ.get('DINGTALK_TOKEN', 'a083b59f98dfb5bd1c275b87df05e
 DINGTALK_SECRET = os.environ.get('DINGTALK_SECRET', 'SEC7f153faacf6efa03646e1fb023a5be97dd49df777f051a05c86b03245ec895ec')
 
 def get_timestamp():
-    """获取当前时间戳（毫秒）"""
     return str(int(time.time() * 1000))
 
 def generate_sign(timestamp, secret):
-    """生成钉钉签名"""
     string_to_sign = '{}\n{}'.format(timestamp, secret)
     secret_enc = secret.encode('utf-8')
-    string_to_sign_enc = string_to_sign.encode('utf-8')
-    hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+    hmac_code = hmac.new(secret_enc, string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
     sign = base64.b64encode(hmac_code).decode('utf-8')
-    sign = urllib.parse.quote(sign)
-    return sign
+    return urllib.parse.quote(sign)
+
+def get_market_index():
+    indices = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    index_codes = {'sh000001': '上证指数', 'sz399001': '深证成指', 'sz399006': '创业板指', 'sh000300': '沪深300'}
+    
+    for code, name in index_codes.items():
+        try:
+            url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=kline_dayhfq&param={code},day,,,5,qfq'
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                text = response.text
+                start, end = text.find('="'), text.rfind('"')
+                if start != -1 and end != -1:
+                    data = json.loads(text[start+2:end])
+                    if 'data' in data and code in data['data']:
+                        days = data['data'][code]['qfqday']
+                        if len(days) >= 5:
+                            latest = days[-1]
+                            close_today = float(latest[1])
+                            close_yesterday = float(latest[2])
+                            ma5 = sum(float(d[1]) for d in days[-5:]) / 5
+                            change_pct = (close_today - close_yesterday) / close_yesterday * 100 if close_yesterday != 0 else 0
+                            indices.append({
+                                'name': name, 'price': round(close_today, 2),
+                                'change_pct': round(change_pct, 2), 'ma5': round(ma5, 2)
+                            })
+        except Exception as e:
+            print(f"获取{name}失败: {e}")
+    
+    print(f"✅ 获取到 {len(indices)} 个指数")
+    return indices
 
 def get_hot_stocks():
-    """获取热点股票（东方财富涨幅榜）"""
-    hot_stocks = []
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    stocks = []
+    headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://quote.eastmoney.com/'}
     
     try:
-        # 东方财富涨幅榜 API - 按涨幅排序
         url = 'https://push2.eastmoney.com/api/qt/clist/get'
-        params = {
-            'pn': 1,
-            'pz': 10,  # 获取前10只
-            'po': 1,   # 降序排列
-            'np': 1,
-            'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
-            'fltt': 2,
-            'invt': 2,
-            'fid': 'f3',  # 按涨跌幅排序
-            'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:23,m:1+t:81',  # A股
-            'fields': 'f2,f3,f4,f5,f6,f7,f12,f14'
-        }
-        
+        params = {'pn': 1, 'pz': 12, 'po': 1, 'np': 1, 'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                  'fltt': 2, 'invt': 2, 'fid': 'f3',
+                  'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:23,m:1+t:81',
+                  'fields': 'f2,f3,f4,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18'}
         response = requests.get(url, params=params, headers=headers, timeout=15)
         if response.status_code == 200:
             data = response.json()
             if 'data' in data and 'diff' in data['data']:
-                for item in data['data']['diff'][:10]:
-                    name = item.get('f14', '未知')
-                    code = item.get('f12', '')
-                    price = item.get('f2', 0)
-                    change_pct = item.get('f3', 0)  # 涨跌幅 %
-                    volume = item.get('f5', 0)  # 成交量
-                    
-                    hot_stocks.append({
-                        'name': name,
-                        'code': code,
-                        'price': price if price != '-' else '0',
-                        'change_pct': change_pct,
-                        'volume': volume
+                for item in data['data']['diff'][:12]:
+                    stocks.append({
+                        'name': item.get('f14', '未知'), 'code': item.get('f12', ''),
+                        'price': item.get('f2', 0), 'change_pct': item.get('f3', 0),
+                        'change_amt': item.get('f4', 0), 'volume': item.get('f5', 0),
+                        'amount': item.get('f6', 0), 'amplitude': item.get('f7', 0),
+                        'turnover': item.get('f8', 0), 'pe': item.get('f10', 0),
+                        'high': item.get('f15', 0), 'low': item.get('f16', 0)
                     })
+                print(f"✅ 获取到 {len(stocks)} 只涨幅榜股票")
+                return stocks
     except Exception as e:
         print(f"获取热点股票失败: {e}")
-    
-    # 备用数据（如果API失败）
-    if len(hot_stocks) < 3:
-        hot_stocks = [
-            {'name': '同花顺', 'code': '300033', 'price': '89.50', 'change_pct': 5.67},
-            {'name': '东方财富', 'code': '300059', 'price': '15.80', 'change_pct': 3.21},
-            {'name': '宁德时代', 'code': '300750', 'price': '198.00', 'change_pct': 2.45},
-            {'name': '贵州茅台', 'code': '600519', 'price': '1680.00', 'change_pct': 1.89},
-            {'name': '比亚迪', 'code': '002594', 'price': '268.00', 'change_pct': 1.56}
-        ]
-    
-    return hot_stocks
+    return []
 
 def get_decline_stocks():
-    """获取跌幅榜股票"""
-    decline_stocks = []
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    stocks = []
+    headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://quote.eastmoney.com/'}
     
     try:
-        # 东方财富跌幅榜 API
         url = 'https://push2.eastmoney.com/api/qt/clist/get'
-        params = {
-            'pn': 1,
-            'pz': 5,
-            'po': 0,   # 升序排列
-            'np': 1,
-            'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
-            'fltt': 2,
-            'invt': 2,
-            'fid': 'f3',
-            'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:23,m:1+t:81',
-            'fields': 'f2,f3,f12,f14'
-        }
-        
+        params = {'pn': 1, 'pz': 8, 'po': 0, 'np': 1, 'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                  'fltt': 2, 'invt': 2, 'fid': 'f3',
+                  'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:23,m:1+t:81',
+                  'fields': 'f2,f3,f5,f6,f7,f8,f10,f12,f14,f15,f16'}
         response = requests.get(url, params=params, headers=headers, timeout=15)
         if response.status_code == 200:
             data = response.json()
             if 'data' in data and 'diff' in data['data']:
-                for item in data['data']['diff'][:5]:
-                    decline_stocks.append({
-                        'name': item.get('f14', '未知'),
-                        'code': item.get('f12', ''),
-                        'price': item.get('f2', 0),
-                        'change_pct': item.get('f3', 0)
+                for item in data['data']['diff'][:8]:
+                    stocks.append({
+                        'name': item.get('f14', '未知'), 'code': item.get('f12', ''),
+                        'price': item.get('f2', 0), 'change_pct': item.get('f3', 0),
+                        'volume': item.get('f5', 0), 'amount': item.get('f6', 0),
+                        'turnover': item.get('f8', 0), 'pe': item.get('f10', 0),
+                        'high': item.get('f15', 0), 'low': item.get('f16', 0)
                     })
+                print(f"✅ 获取到 {len(stocks)} 只跌幅榜股票")
+                return stocks
     except Exception as e:
         print(f"获取跌幅榜失败: {e}")
-    
-    if len(decline_stocks) < 2:
-        decline_stocks = [
-            {'name': 'XX股票', 'code': '000000', 'price': '10.00', 'change_pct': -3.21},
-            {'name': 'XX股票', 'code': '000001', 'price': '8.50', 'change_pct': -2.15}
-        ]
-    
-    return decline_stocks
-
-def get_stock_comment(stock):
-    """根据涨跌幅生成个股点评和操作建议"""
-    change = stock.get('change_pct', 0)
-    name = stock.get('name', '')
-    price = stock.get('price', 0)
-    
-    try:
-        price = float(price)
-    except:
-        price = 0
-    
-    # 涨幅分析
-    if change >= 10:
-        return {
-            'comment': f"{name}涨停，封板强势，关注明日能否继续封板",
-            'advice': "强势涨停，建议关注次日开盘表现，若高开可适量参与"
-        }
-    elif change >= 7:
-        return {
-            'comment': f"{name}大幅上涨{change:.2f}%，资金大幅流入",
-            'advice': "涨幅较大，稳健投资者可考虑减仓锁定利润"
-        }
-    elif change >= 4:
-        return {
-            'comment': f"{name}表现强势，上涨{change:.2f}%，站上多条均线",
-            'advice': "走势强劲，可继续持有，关注上方压力位"
-        }
-    elif change >= 2:
-        return {
-            'comment': f"{name}温和上涨{change:.2f}%，量能配合良好",
-            'advice': "走势健康，可持有或逢低加仓"
-        }
-    elif change > 0:
-        return {
-            'comment': f"{name}小幅上涨{change:.2f}%，观望为主",
-            'advice': "波动较小，建议观望，不宜追高"
-        }
-    # 跌幅分析
-    elif change <= -7:
-        return {
-            'comment': f"{name}大幅下跌{change:.2f}%，注意止损",
-            'advice': "跌幅较大，建议严格止损，控制风险"
-        }
-    elif change <= -4:
-        return {
-            'comment': f"{name}明显回调，下跌{change:.2f}%，跌破均线",
-            'advice': "走势偏弱，建议减仓，等待企稳信号"
-        }
-    elif change <= -2:
-        return {
-            'comment': f"{name}小幅调整，下跌{change:.2f}%",
-            'advice': "正常回调，若持有可继续观望，设定止损位"
-        }
-    else:
-        return {
-            'comment': f"{name}平盘震荡，走势平稳",
-            'advice': "无明显方向，建议观望"
-        }
+    return []
 
 def get_finance_news():
-    """获取财经新闻（东方财富快讯）"""
     news_list = []
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://news.eastmoney.com/'}
     
     try:
-        # 东方财富快讯 API
-        response = requests.get(
-            'https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html',
-            headers=headers,
-            timeout=15
-        )
-        
+        response = requests.get('https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html',
+                                headers=headers, timeout=15)
         if response.status_code == 200:
             data = response.json()
             if 'LivesList' in data:
-                for item in data['LivesList'][:8]:
+                for item in data['LivesList'][:10]:
                     news_list.append({
                         'title': item.get('title', ''),
                         'time': item.get('showtime', ''),
-                        'summary': item.get('digest', '')[:60] if item.get('digest') else ''
+                        'summary': item.get('digest', '')[:50] if item.get('digest') else ''
                     })
+                print(f"✅ 获取到 {len(news_list)} 条财经新闻")
+                return news_list
     except Exception as e:
         print(f"获取新闻失败: {e}")
-    
-    # 备用新闻
-    if len(news_list) < 3:
-        news_list = [
-            {'title': 'A股三大指数集体收涨', 'time': '今日收盘', 'summary': '两市成交额突破万亿'},
-            {'title': '央行逆回购操作', 'time': '今日上午', 'summary': '释放流动性维护市场稳定'},
-            {'title': '北向资金净流入', 'time': '今日盘中', 'summary': '外资持续增持A股核心资产'},
-            {'title': '美股三大指数收涨', 'time': '隔夜收盘', 'summary': '科技股表现强劲'},
-            {'title': '原油价格小幅上涨', 'time': '今日', 'summary': '国际油价震荡走高'}
-        ]
-    
-    return news_list
+    return []
 
-def get_market_overview():
-    """获取市场概况"""
-    overview = {
-        'index': [
-            {'name': '上证指数', 'code': 'SH000001', 'desc': '关注3100点支撑'},
-            {'name': '深证成指', 'code': 'SZ399001', 'desc': '关注均线粘合区域'},
-            {'name': '创业板指', 'code': 'SZ399006', 'desc': '关注成长股机会'}
-        ],
-        'sectors': ['科技', '消费', '新能源', '医药', '金融'],
-        'total_turnover': '8000-10000亿'
+def format_amount(amount):
+    try:
+        amount = float(amount)
+        if amount >= 100000000: return f"{amount/100000000:.2f}亿"
+        elif amount >= 10000: return f"{amount/10000:.2f}万"
+        return f"{amount:.2f}"
+    except: return str(amount)
+
+def quantitative_analysis(stock):
+    change = stock.get('change_pct', 0)
+    turnover = stock.get('turnover', 0)
+    amplitude = stock.get('amplitude', 0)
+    pe = stock.get('pe', 0)
+    high = stock.get('high', 0)
+    low = stock.get('low', 0)
+    
+    signals = []
+    risk_level = "中"
+    action = "观望"
+    
+    # 涨停分析
+    if change >= 9.9:
+        if turnover > 20:
+            signals.append("换手率极高，主力筹码松动")
+            risk_level = "高"
+            action = "谨慎追板，获利了结"
+        elif turnover > 10:
+            signals.append("换手率较高，封板资金活跃")
+            risk_level = "中"
+            action = "可持仓，设止盈"
+        else:
+            signals.append("封板坚决，筹码稳定")
+            risk_level = "低"
+            action = "继续持有"
+    elif change >= 7:
+        if turnover > 15:
+            signals.append("高位放量，警惕出货")
+            risk_level = "高"
+            action = "逢高减仓"
+        elif amplitude > 10:
+            signals.append("振幅较大，多空博弈激烈")
+            risk_level = "中"
+            action = "高抛低吸"
+        else:
+            signals.append("量价齐升，趋势健康")
+            risk_level = "低"
+            action = "持有或低吸"
+    elif change >= 4:
+        if turnover > 10:
+            signals.append("活跃度高，资金关注")
+            risk_level = "中低"
+            action = "可轻仓介入"
+        else:
+            signals.append("稳步上涨，趋势完好")
+            risk_level = "低"
+            action = "持有"
+    elif change >= 2:
+        signals.append("温和放量，稳步推升")
+        risk_level = "低"
+        action = "逢低加仓"
+    elif change > 0:
+        signals.append("小幅波动，方向不明")
+        risk_level = "中"
+        action = "观望等待"
+    elif change <= -7:
+        if turnover > 15:
+            signals.append("放量下跌，资金出逃")
+            risk_level = "极高"
+            action = "严格止损"
+        else:
+            signals.append("恐慌抛售，超卖信号")
+            risk_level = "高"
+            action = "不抄底，等企稳"
+    elif change <= -4:
+        signals.append("明显破位，趋势走弱")
+        risk_level = "高"
+        action = "减仓止损"
+    elif change <= -2:
+        signals.append("小幅回调，注意支撑")
+        risk_level = "中"
+        action = "设止损持有"
+    else:
+        signals.append("窄幅震荡，等待突破")
+        risk_level = "中"
+        action = "观望"
+    
+    # 估值
+    valuation = ""
+    try:
+        pe_val = float(pe) if pe and pe != '-' else 0
+        if pe_val > 0:
+            if pe_val < 15: valuation = "低估值"
+            elif pe_val < 40: valuation = "合理"
+            else: valuation = "高估值"
+    except: pass
+    
+    # 技术位
+    try:
+        support = round(float(low) * 0.98, 2) if low else 0
+        resist = round(float(high) * 1.01, 2) if high else 0
+    except:
+        support, resist = 0, 0
+    
+    return {
+        'signals': signals, 'risk_level': risk_level, 'action': action,
+        'valuation': valuation, 'support': support, 'resist': resist,
+        'turnover': turnover, 'amplitude': amplitude
     }
-    return overview
 
 def generate_report():
-    """生成完整的财经早报"""
-    today = datetime.now().strftime('%Y年%m月%d日 %A')
+    today = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+    print("=" * 60)
+    print("📊 量化交易早报 - 开始获取数据...")
+    print("=" * 60)
     
-    # 获取数据
+    indices = get_market_index()
     hot_stocks = get_hot_stocks()
     decline_stocks = get_decline_stocks()
     news_list = get_finance_news()
-    overview = get_market_overview()
     
-    report = f"""# 📈 财经早报
+    report = f"""# 📊 量化交易早报
 
 **{today}**
 
 ---
 
-## 【大盘概况】
-
-**上证指数**：震荡调整，关注3100点支撑力度
-
-**深证成指**：中小盘股活跃，个股机会增多
-
-**创业板**：科技股领涨，成长风格占优
-
-**两市成交**：{overview['total_turnover']}左右
-
----
-
-## 🔥 【涨幅榜热点】
+## 【大盘指数】
 
 """
     
-    # 添加涨幅榜股票
-    for i, stock in enumerate(hot_stocks[:5], 1):
-        comment_data = get_stock_comment(stock)
-        trend_icon = '🔺' if stock['change_pct'] > 0 else '🔻'
-        report += f"**{i}. {stock['name']}** ({stock['code']})\n"
-        report += f"   现价：¥{stock['price']} {trend_icon} **{stock['change_pct']:+.2f}%**\n"
-        report += f"   点评：{comment_data['comment']}\n"
-        report += f"   建议：{comment_data['advice']}\n\n"
+    if indices:
+        for idx in indices:
+            trend = '🔺' if idx['change_pct'] > 0 else '🔻' if idx['change_pct'] < 0 else '➡️'
+            ma_signal = " MA5上方" if idx['price'] > idx['ma5'] else " MA5下方"
+            report += f"**{idx['name']}**：{idx['price']} {trend} {idx['change_pct']:+.2f}%{ma_signal}\n"
+        rise_count = len([s for s in hot_stocks if s.get('change_pct', 0) > 0])
+        report += f"\n> 市场情绪：偏热 ({rise_count}只涨停或大涨)\n"
+    else:
+        report += "暂无实时数据\n"
     
     report += """---
 
-## 🔻 【跌幅榜提醒】
+## 🔥 【涨幅榜量化分析】
 
 """
     
-    # 添加跌幅榜股票
-    for i, stock in enumerate(decline_stocks[:3], 1):
-        comment_data = get_stock_comment(stock)
-        report += f"**{i}. {stock['name']}** ({stock['code']})\n"
-        report += f"   现价：¥{stock['price']} 🔻 **{stock['change_pct']:.2f}%**\n"
-        report += f"   建议：{comment_data['advice']}\n\n"
+    if hot_stocks:
+        for i, stock in enumerate(hot_stocks[:8], 1):
+            analysis = quantitative_analysis(stock)
+            risk_emoji = {"低": "🟢", "中": "🟡", "中低": "🟢", "高": "🟠", "极高": "🔴"}.get(analysis['risk_level'], "🟡")
+            report += f"**{i}. {stock['name']}** ({stock['code']})\n"
+            report += f"   价格：¥{stock['price']} | 涨幅：🔺 **{stock['change_pct']:+.2f}%**\n"
+            report += f"   换手率：{analysis['turnover']:.2f}% | 振幅：{analysis['amplitude']:.2f}%\n"
+            report += f"   成交额：{format_amount(stock.get('amount', 0))}\n"
+            if analysis['valuation']: report += f"   估值：{analysis['valuation']}\n"
+            report += f"   量化信号：{' | '.join(analysis['signals'])}\n"
+            report += f"   风险等级：{risk_emoji} {analysis['risk_level']}\n"
+            if analysis['support'] and analysis['resist']:
+                report += f"   技术位：支撑 {analysis['support']} | 压力 {analysis['resist']}\n"
+            report += f"   **{analysis['action']}**\n\n"
+    else:
+        report += "暂无数据\n"
+    
+    report += """---
+
+## 🔻 【跌幅榜风险提示】
+
+"""
+    
+    if decline_stocks:
+        for i, stock in enumerate(decline_stocks[:5], 1):
+            analysis = quantitative_analysis(stock)
+            risk_emoji = {"低": "🟢", "中": "🟡", "中低": "🟢", "高": "🟠", "极高": "🔴"}.get(analysis['risk_level'], "🟡")
+            report += f"**{i}. {stock['name']}** ({stock['code']})\n"
+            report += f"   价格：¥{stock['price']} | 跌幅：🔻 **{stock['change_pct']:.2f}%**\n"
+            report += f"   换手率：{analysis['turnover']:.2f}%\n"
+            report += f"   量化信号：{' | '.join(analysis['signals'])}\n"
+            report += f"   风险等级：{risk_emoji} {analysis['risk_level']}\n"
+            report += f"   **{analysis['action']}**\n\n"
+    else:
+        report += "暂无数据\n"
     
     report += """---
 
@@ -308,58 +328,55 @@ def generate_report():
 
 """
     
-    # 添加新闻
-    for i, news in enumerate(news_list[:6], 1):
-        report += f"**{i}. {news['title']}**\n"
-        if news['summary']:
-            report += f"   {news['summary']}\n"
-        report += "\n"
+    if news_list:
+        for i, news in enumerate(news_list[:8], 1):
+            report += f"**{i}. {news['title']}**\n"
+            if news['summary']: report += f"   {news['summary']}\n"
+            report += "\n"
+    else:
+        report += "暂无新闻\n"
     
     report += """---
 
-## 💡 【今日操作建议】
+## 💡 【量化操作建议】
 
-**仓位控制**：建议保持 **5-6成** 仓位
+**仓位管理**：
+- 总仓位建议：5-6成
+- 热门板块仓位：≤2成
+- 止损线：-3%严格执行
 
-**关注方向**：
-- 科技板块：关注 AI、半导体等热点
-- 消费板块：关注政策刺激带来的机会
-- 金融板块：银行、保险等低估值蓝筹
+**选股策略**：
+- 优先：换手率5-15%、涨幅3-7%的放量突破股
+- 回避：换手率>25%的加速赶顶股
+- 关注：量比>2、股价站在5日均线上方
 
-**风险提示**：
-- 控制仓位，避免追涨杀跌
-- 关注外围市场波动
-- 设置止损位，理性投资
+**操作节奏**：
+- 买入：回调至支撑位缩量时介入
+- 卖出：放量滞涨或破5日线离场
+- 持币：指数跌破20日均线时降仓
+
+**风险控制**：
+- 单只股票仓位≤20%
+- 亏损超过5%必须止损
+- 避免盲目追涨停板
 
 ---
 
-*本报告由AI自动生成，数据仅供参考*
-*投资有风险，入市需谨慎*
+*本报告由量化模型自动生成，数据来源东方财富/腾讯财经*
+*投资有风险，模型仅供参考，不构成投资建议*
 """
-
     return report
 
 def send_dingtalk(message):
-    """发送钉钉消息"""
     timestamp = get_timestamp()
     sign = generate_sign(timestamp, DINGTALK_SECRET)
-    
     url = f"https://oapi.dingtalk.com/robot/send?access_token={DINGTALK_TOKEN}&timestamp={timestamp}&sign={sign}"
-    
     headers = {'Content-Type': 'application/json'}
-    
-    data = {
-        "msgtype": "markdown",
-        "markdown": {
-            "title": "财经早报",
-            "text": message
-        }
-    }
+    data = {"msgtype": "markdown", "markdown": {"title": "量化交易早报", "text": message}}
     
     try:
         response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
         result = response.json()
-        
         if result.get('errcode') == 0:
             print("✅ 钉钉消息发送成功!")
             return True
@@ -372,23 +389,17 @@ def send_dingtalk(message):
 
 def main():
     print("=" * 60)
-    print("📊 每日财经早报 - 开始获取数据...")
+    print("📊 量化交易早报 - 开始运行")
     print("=" * 60)
-    
-    # 生成早报
     report = generate_report()
-    print("📝 早报内容已生成")
-    print(f"📏 长度: {len(report)} 字符")
-    
-    # 发送钉钉
+    print(f"📝 早报已生成，长度: {len(report)} 字符")
     success = send_dingtalk(report)
-    
     if success:
-        print("🎉 今日财经早报推送完成!")
+        print("🎉 今日早报推送完成!")
     else:
-        print("💥 推送失败，请检查配置")
-        
+        print("💥 推送失败")
     return success
 
 if __name__ == "__main__":
     main()
+
