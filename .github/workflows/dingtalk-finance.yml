@@ -2,7 +2,8 @@ name: 每日财经早报钉钉推送
 
 on:
   schedule:
-    - cron: '0 9 * * *'
+    # 每天 0:00 UTC 运行 (北京时间 8:00)
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
