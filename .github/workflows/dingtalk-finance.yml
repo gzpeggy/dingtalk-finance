@@ -1,0 +1,28 @@
+name: 每日财经早报钉钉推送
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  dingtalk-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: pip install requests
+        
+      - name: Get financial news and push to DingTalk
+        env:
+          DINGTALK_TOKEN: a083b59f98dfb5bd1c275b87df05ebf3c32648ced0dc2379953ec55334e903a7
+          DINGTALK_SECRET: SEC7f153faacf6efa03646e1fb023a5be97dd49df777f051a05c86b03245ec895ec
+        run: python daily_news.py
