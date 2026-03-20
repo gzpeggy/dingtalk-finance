@@ -285,7 +285,7 @@ def generate_report():
         comment_data = get_stock_comment(stock)
         trend_icon = '🔺' if stock['change_pct'] > 0 else '🔻'
         report += f"**{i}. {stock['name']}** ({stock['code']})\n"
-        report += f"   現价：¥{stock['price']} {trend_icon} **{stock['change_pct']:+.2f}%**\n"
+        report += f"   现价：¥{stock['price']} {trend_icon} **{stock['change_pct']:+.2f}%**\n"
         report += f"   点评：{comment_data['comment']}\n"
         report += f"   建议：{comment_data['advice']}\n\n"
     
