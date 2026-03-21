@@ -16,8 +16,8 @@ import requests
 from datetime import datetime
 
 # 钉钉配置
-DINGTALK_TOKEN = os.environ.get('DINGTALK_TOKEN', 'a083b59f98dfb5bd1c275b87df05ebf3c32648ced0dc2379953ec55334e903a7')
-DINGTALK_SECRET = os.environ.get('DINGTALK_SECRET', 'SEC7f153faacf6efa03646e1fb023a5be97dd49df777f051a05c86b03245ec895ec')
+DINGTALK_TOKEN = os.environ.get('DINGTALK_TOKEN', '')
+DINGTALK_SECRET = os.environ.get('DINGTALK_SECRET', '')
 
 def get_timestamp():
     return str(int(time.time() * 1000))
@@ -32,7 +32,6 @@ def get_market_index():
     indices = []
     headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn/'}
 
-    # 新浪财经指数代码
     codes = {'sh000001': '上证指数', 'sz399001': '深证成指', 'sz399006': '创业板指', 'sh000300': '沪深300'}
 
     try:
@@ -51,14 +50,12 @@ def get_market_index():
                     if len(data) >= 6:
                         price = float(data[3]) if data[3] else 0  # 现价在data[3]
                         yesterday = float(data[2]) if data[2] else 0  # 昨收在data[2]
-                        # 计算涨跌幅
                         pct = ((price - yesterday) / yesterday * 100) if yesterday > 0 else 0
                         indices.append({
                             'name': name,
                             'price': f'{price:.2f}',
                             'change': round(pct, 2)
                         })
-                        print(f"✅ {name}: {price:.2f} ({pct:+.2f}%)")
     except Exception as e:
         print(f"❌ 获取指数失败: {e}")
 
@@ -105,7 +102,6 @@ def get_hot_stocks():
                         stocks.append(stock)
                     except:
                         continue
-                print(f"✅ 获取到 {len(stocks)} 只股票")
                 return stocks
     except Exception as e:
         print(f"❌ 获取涨幅榜失败: {e}")
@@ -124,18 +120,12 @@ def get_finance_news():
         response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code == 200:
-            # 返回格式: var ajaxResult = {...}
             content = response.text
-            # 提取JSON部分
             json_match = re.search(r'ajaxResult\s*=\s*(\{.*\})', content, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group(1))
                 if 'LivesList' in data:
-                    news = [{'title': item.get('title', '')} for item in data['LivesList'][:5]]
-                    print(f"✅ 获取到 {len(news)} 条新闻")
-                    return news
-            else:
-                print(f"❌ 新闻解析失败，内容: {content[:200]}")
+                    return [{'title': item.get('title', '')} for item in data['LivesList'][:5]]
     except Exception as e:
         print(f"❌ 获取新闻失败: {e}")
 
@@ -154,7 +144,6 @@ def quant_select(stocks, indices):
     if not stocks: return []
 
     avg_change = sum(idx.get('change', 0) for idx in indices) / len(indices) if indices else 0
-    print(f"大盘平均涨跌: {avg_change:.2f}%")
 
     candidates = []
     for s in stocks:
@@ -170,7 +159,6 @@ def quant_select(stocks, indices):
 
         score, tags = 0, []
 
-        # 涨停评分
         if change >= limit:
             if turnover < 15:
                 score, tags = 50, ["缩量涨停"]
@@ -196,17 +184,14 @@ def quant_select(stocks, indices):
             else:
                 score = 15
 
-        # 成交额适中
         try:
             if 1e8 < float(amount) < 5e9: score += 10
         except: pass
 
-        # 强于大盘
         if change > avg_change + 3:
             score += 10
             tags.append("强于大盘")
 
-        # 市盈率合理
         try:
             pe_val = float(pe) if pe and pe != '-' else 0
             if 0 < pe_val < 60: score += 5
@@ -216,9 +201,7 @@ def quant_select(stocks, indices):
             candidates.append({'stock': s, 'score': score, 'tags': tags, 'limit': limit})
 
     candidates.sort(key=lambda x: x['score'], reverse=True)
-    selected = candidates[:5]
-    print(f"✅ 精选出 {len(selected)} 只股票")
-    return selected
+    return candidates[:5]
 
 def get_action(item):
     s, change, turnover = item['stock'], item['stock'].get('change_pct', 0), item['stock'].get('turnover', 0)
@@ -242,19 +225,12 @@ def get_position(indices):
 def generate_report():
     today = datetime.now().strftime('%Y年%m月%d日')
 
-    print("=" * 60)
-    print("开始获取数据...")
-    print("=" * 60)
-
     indices = get_market_index()
     hot_stocks = get_hot_stocks()
     news = get_finance_news()
     selected = quant_select(hot_stocks, indices)
     position = get_position(indices)
 
-    print(f"\n📊 指数: {len(indices)}个, 股票: {len(hot_stocks)}只, 新闻: {len(news)}条, 精选: {len(selected)}只")
-
-    # 构建报告
     report = f"# 📊 量化选股早报\n\n**{today}**\n\n---\n\n## 【大盘行情】\n\n"
 
     if indices:
@@ -306,23 +282,14 @@ def send_dingtalk(msg):
             timeout=15
         )
         result = response.json()
-        print(f"钉钉返回: {result}")
         return result.get('errcode') == 0
     except Exception as e:
         print(f"❌ 发送失败: {e}")
         return False
 
 def main():
-    print("=" * 60)
-    print("量化选股早报 - 开始运行")
-    print("=" * 60)
-
     report = generate_report()
-    print(f"\n报告长度: {len(report)} 字符")
-
-    success = send_dingtalk(report)
-    print("✅ 发送成功" if success else "❌ 发送失败")
-    return success
+    return send_dingtalk(report)
 
 if __name__ == "__main__":
     main()
